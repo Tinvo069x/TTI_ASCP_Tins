@@ -8,6 +8,7 @@ from datetime import datetime
 # Core processing helpers
 # ========================
 def read_excel_safely(path, sheet, header_row):
+    """Đọc Excel theo đuôi file, fallback khi lỗi."""
     p = Path(path)
     suf = p.suffix.lower()
 
@@ -20,14 +21,24 @@ def read_excel_safely(path, sheet, header_row):
     else:
         raise ValueError(f"Định dạng không hỗ trợ: {suf}")
 
+    # Lấy sheet đầu nếu để trống
     if sheet == "" or sheet is None:
         xls = pd.ExcelFile(p, engine=engine)
         sheet = xls.sheet_names[0]
 
-    return pd.read_excel(p, sheet_name=sheet, header=header_row, engine=engine)
+    try:
+        return pd.read_excel(p, sheet_name=sheet, header=header_row, engine=engine)
+    except Exception as e:
+        if suf == ".xlsb":
+            raise RuntimeError(
+                "❌ Không đọc được .xlsb. "
+                "Hãy mở file này trong Excel rồi Save As thành .xlsx để xử lý."
+            ) from e
+        raise
 
 
 def convert_headers_to_yyyyww(cols: pd.Index):
+    """Đổi tên cột: nếu parse được ngày → đổi sang dạng YYYYWW"""
     s = pd.Index(cols).astype(str)
     is_yyyyww = s.str.fullmatch(r"\d{6}", na=False)
     to_parse = s.where(~is_yyyyww, None)
@@ -54,6 +65,7 @@ def consolidate_weeks_fast(df: pd.DataFrame, week_mask: pd.Index, sort_week_cols
     wk_num = wk.apply(pd.to_numeric, errors="coerce")
     wk_sum = wk_num.groupby(wk_num.columns, axis=1).sum(min_count=1)
 
+    # Nếu toàn NaN thì giữ cột gốc
     groups = {}
     for c in wk.columns:
         groups.setdefault(c, []).append(c)
@@ -74,6 +86,7 @@ def consolidate_weeks_fast(df: pd.DataFrame, week_mask: pd.Index, sort_week_cols
 
 
 def filter_firm_forecast_colB(df: pd.DataFrame) -> pd.DataFrame:
+    """Giữ lại dòng có colB = Firm hoặc Forecast"""
     if df.shape[1] <= 1:
         return df
     col = df.iloc[:, 1].astype(str).str.strip().str.lower()
@@ -104,23 +117,30 @@ header_row = st.number_input("Header row (0-based)", min_value=0, max_value=100,
 if uploaded_file:
     if st.button("Process"):
         try:
-            # Lưu file tạm
-            temp_path = Path("temp_input.xlsx")
+            # Lưu file upload vào tạm
+            suffix = Path(uploaded_file.name).suffix
+            temp_path = Path("temp_input" + suffix)
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.read())
 
+            # Xử lý
             df = process_excel(temp_path, sheet_name.strip(), int(header_row))
 
             st.success("✅ Xử lý thành công!")
-            st.dataframe(df.head(50))  # Hiển thị 50 dòng đầu
+            st.dataframe(df.head(50))  # hiển thị preview
 
             # Xuất ra file Excel tải về
             today_str = datetime.today().strftime("%Y%m%d")
             out_name = f"{today_str}.xlsx"
-            df.to_excel(out_name, index=False)
+            df.to_excel(out_name, index=False, engine="xlsxwriter")
 
             with open(out_name, "rb") as f:
-                st.download_button("📥 Download output", f, file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                st.download_button(
+                    label="📥 Download output",
+                    data=f,
+                    file_name=out_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
         except Exception as e:
             st.error(f"❌ Lỗi: {e}")
